@@ -24,11 +24,12 @@ type SamplingBatchService interface {
 
 type samplingBatchService struct {
 	repository repository.SamplingBatchRepository
+	samples    repository.LabSampleRepository
 	security   SecurityService
 }
 
-func NewSamplingBatchService(repo repository.SamplingBatchRepository, security SecurityService) SamplingBatchService {
-	return &samplingBatchService{repository: repo, security: security}
+func NewSamplingBatchService(repo repository.SamplingBatchRepository, samples repository.LabSampleRepository, security SecurityService) SamplingBatchService {
+	return &samplingBatchService{repository: repo, samples: samples, security: security}
 }
 
 func (s *samplingBatchService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.SamplingBatch], error) {
@@ -97,6 +98,20 @@ func (s *samplingBatchService) Transition(ctx context.Context, id uint, input dt
 	target := strings.TrimSpace(input.Status)
 	if !constants.CanTransition(constants.SamplingBatchTransitions, current.Status, target) {
 		return model.SamplingBatch{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+	}
+	if target == string(constants.BatchStateClosed) {
+		// Release gate: a batch must not close while any of its samples is
+		// still undisposed. The rejection is audited and leaves the record
+		// untouched.
+		undisposed, err := s.samples.CountUndisposedByBatch(ctx, current.Code)
+		if err != nil {
+			return model.SamplingBatch{}, fmt.Errorf("count undisposed samples: %w", err)
+		}
+		if undisposed > 0 {
+			reason := fmt.Sprintf("批次 %s 仍有 %d 份未处置样本，不得关闭", current.Code, undisposed)
+			_ = s.security.Audit(ctx, actor, requestID, "release_blocked", "SamplingBatch", id, current.Status, current.Status, reason)
+			return model.SamplingBatch{}, fmt.Errorf("%w: %s", ErrReleaseBlocked, reason)
+		}
 	}
 	before := current.Status
 	current.Status = target

@@ -15,11 +15,27 @@ export interface DomainRecord {
   effectiveAt: string;
   evidence: string;
   relatedCode: string;
+  batchCode?: string;
+  methodCode?: string;
+  sampleCode?: string;
+  disposalReason?: string;
+  disposedBatchCode?: string;
+  disposedMethodCode?: string;
+  disposedAt?: string;
   reviewRequestedBy?: string;
   peerReviewedBy?: string;
   signedBy?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ChainLink { kind: string; code: string; name: string; status: string; exists: boolean }
+export interface ChainCheck { key: string; label: string; passed: boolean; reason: string }
+export interface ChainBlock { at: string; actor: string; action: string; reason: string }
+export interface DisposalSnapshot { reason: string; batchCode: string; methodCode: string; disposedAt?: string }
+export interface ChainView {
+  entityType: string; entityId: number; code: string; status: string;
+  links: ChainLink[]; checks: ChainCheck[]; blocks: ChainBlock[]; disposal?: DisposalSnapshot;
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }

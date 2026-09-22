@@ -32,14 +32,16 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	labSampleRepository := repository.NewLabSampleRepository(db)
 	assayMethodRepository := repository.NewAssayMethodRepository(db)
 	resultReviewRepository := repository.NewResultReviewRepository(db)
-	samplingBatchService := service.NewSamplingBatchService(samplingBatchRepository, securityService)
-	labSampleService := service.NewLabSampleService(labSampleRepository, securityService)
+	samplingBatchService := service.NewSamplingBatchService(samplingBatchRepository, labSampleRepository, securityService)
+	labSampleService := service.NewLabSampleService(labSampleRepository, samplingBatchRepository, assayMethodRepository, securityService)
 	assayMethodService := service.NewAssayMethodService(assayMethodRepository, securityService)
-	resultReviewService := service.NewResultReviewService(resultReviewRepository, securityService)
+	resultReviewService := service.NewResultReviewService(resultReviewRepository, labSampleRepository, assayMethodRepository, securityService)
+	chainService := service.NewChainService(samplingBatchRepository, labSampleRepository, assayMethodRepository, resultReviewRepository, securityService)
 	samplingBatchHandler := handler.NewSamplingBatchHandler(samplingBatchService)
 	labSampleHandler := handler.NewLabSampleHandler(labSampleService)
 	assayMethodHandler := handler.NewAssayMethodHandler(assayMethodService)
 	resultReviewHandler := handler.NewResultReviewHandler(resultReviewService)
+	chainHandler := handler.NewChainHandler(chainService)
 	systemHandler := handler.NewSystemHandler(securityService, samplingBatchService, labSampleService, assayMethodService, resultReviewService, db, redisClient)
 
 	engine.GET("/healthz", systemHandler.Health)
@@ -58,6 +60,7 @@ func New(cfg config.Config, db *gorm.DB, redisClient *redis.Client, logger *slog
 	labSampleHandler.Register(api)
 	assayMethodHandler.Register(api)
 	resultReviewHandler.Register(api)
+	chainHandler.Register(api)
 
 	engine.NoRoute(func(c *gin.Context) {
 		if c.Request.Method == http.MethodOptions {

@@ -26,6 +26,28 @@ const (
 
 var AllReviewState = []string{"draft", "peer_review", "signed", "rejected"}
 
+type AssayMethodState string
+
+const (
+	AssayMethodDraft     AssayMethodState = "draft"
+	AssayMethodValidated AssayMethodState = "validated"
+	AssayMethodActive    AssayMethodState = "active"
+	AssayMethodRetired   AssayMethodState = "retired"
+)
+
+var AllAssayMethodState = []string{"draft", "validated", "active", "retired"}
+
+type BatchState string
+
+const (
+	BatchStatePlanned    BatchState = "planned"
+	BatchStateCollecting BatchState = "collecting"
+	BatchStateReceived   BatchState = "received"
+	BatchStateClosed     BatchState = "closed"
+)
+
+var AllBatchState = []string{"planned", "collecting", "received", "closed"}
+
 var SamplingBatchTransitions = map[string]map[string]bool{
 	"planned":    {"collecting": true, "received": true},
 	"collecting": {"received": true, "closed": true, "planned": true},

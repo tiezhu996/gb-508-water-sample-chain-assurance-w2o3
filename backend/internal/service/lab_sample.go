@@ -24,11 +24,13 @@ type LabSampleService interface {
 
 type labSampleService struct {
 	repository repository.LabSampleRepository
+	batches    repository.SamplingBatchRepository
+	methods    repository.AssayMethodRepository
 	security   SecurityService
 }
 
-func NewLabSampleService(repo repository.LabSampleRepository, security SecurityService) LabSampleService {
-	return &labSampleService{repository: repo, security: security}
+func NewLabSampleService(repo repository.LabSampleRepository, batches repository.SamplingBatchRepository, methods repository.AssayMethodRepository, security SecurityService) LabSampleService {
+	return &labSampleService{repository: repo, batches: batches, methods: methods, security: security}
 }
 
 func (s *labSampleService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.LabSample], error) {
@@ -43,6 +45,12 @@ func (s *labSampleService) Create(ctx context.Context, input dto.CreateLabSample
 	if err := validateLabSampleBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.LabSample{}, err
 	}
+	batchCode := strings.ToUpper(strings.TrimSpace(input.BatchCode))
+	methodCode := strings.ToUpper(strings.TrimSpace(input.MethodCode))
+	if reason := s.receptionBlockReason(ctx, batchCode, methodCode); reason != "" {
+		_ = s.security.Audit(ctx, actor, requestID, "release_blocked", "LabSample", 0, "", model.LabSampleInitialStatus, reason)
+		return model.LabSample{}, fmt.Errorf("%w: %s", ErrReleaseBlocked, reason)
+	}
 	item := model.LabSample{
 		BaseModel: model.BaseModel{
 			Code: strings.ToUpper(strings.TrimSpace(input.Code)), Name: strings.TrimSpace(input.Name),
@@ -53,12 +61,38 @@ func (s *labSampleService) Create(ctx context.Context, input dto.CreateLabSample
 		MetricValue: input.MetricValue, MetricUnit: strings.TrimSpace(input.MetricUnit),
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		BatchCode:   batchCode, MethodCode: methodCode,
 	}
 	if err := s.repository.Create(ctx, &item); err != nil {
 		return model.LabSample{}, fmt.Errorf("create 实验室样本: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "create", "LabSample", item.ID, "", item.Status, "created 实验室样本")
 	return item, nil
+}
+
+// receptionBlockReason enforces the release constraint at sample reception:
+// the sampling batch must already be received and the selected method version
+// must be active. It returns a human-readable blocking reason, or "" when the
+// reception may proceed.
+func (s *labSampleService) receptionBlockReason(ctx context.Context, batchCode, methodCode string) string {
+	if batchCode == "" || methodCode == "" {
+		return "样本接收必须选择所属批次与检测方法版本"
+	}
+	batch, err := s.batches.GetByCode(ctx, batchCode)
+	if err != nil {
+		return fmt.Sprintf("所属批次 %s 不存在", batchCode)
+	}
+	if batch.Status != string(constants.BatchStateReceived) {
+		return fmt.Sprintf("批次 %s 当前状态为 %s，必须已收到(received)才能接收样本", batch.Code, batch.Status)
+	}
+	method, err := s.methods.GetByCode(ctx, methodCode)
+	if err != nil {
+		return fmt.Sprintf("检测方法 %s 不存在", methodCode)
+	}
+	if method.Status != string(constants.AssayMethodActive) {
+		return fmt.Sprintf("检测方法 %s 当前状态为 %s，必须处于有效(active)版本", method.Code, method.Status)
+	}
+	return ""
 }
 
 func (s *labSampleService) Update(ctx context.Context, id uint, input dto.UpdateLabSample, actor, requestID string) (model.LabSample, error) {
@@ -100,6 +134,18 @@ func (s *labSampleService) Transition(ctx context.Context, id uint, input dto.Tr
 	}
 	before := current.Status
 	current.Status = target
+	if target == string(constants.SampleStateDisposed) {
+		// Disposal requires an explicit reason and preserves the method version
+		// and batch that were in effect at that moment.
+		if strings.TrimSpace(input.Reason) == "" {
+			return model.LabSample{}, fmt.Errorf("%w: 样本处置必须填写处置原因", ErrInvalidInput)
+		}
+		now := time.Now().UTC()
+		current.DisposalReason = strings.TrimSpace(input.Reason)
+		current.DisposedBatchCode = current.BatchCode
+		current.DisposedMethodCode = current.MethodCode
+		current.DisposedAt = &now
+	}
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {

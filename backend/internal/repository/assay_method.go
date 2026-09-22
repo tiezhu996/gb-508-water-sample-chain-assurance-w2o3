@@ -12,6 +12,7 @@ import (
 type AssayMethodRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.AssayMethod], error)
 	Get(context.Context, uint) (model.AssayMethod, error)
+	GetByCode(context.Context, string) (model.AssayMethod, error)
 	Create(context.Context, *model.AssayMethod) error
 	Update(context.Context, uint, uint, *model.AssayMethod) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,9 @@ func (r *assayMethodRepository) List(ctx context.Context, q dto.PageQuery) (Page
 }
 func (r *assayMethodRepository) Get(ctx context.Context, id uint) (model.AssayMethod, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *assayMethodRepository) GetByCode(ctx context.Context, code string) (model.AssayMethod, error) {
+	return r.store.GetByCode(ctx, code)
 }
 func (r *assayMethodRepository) Create(ctx context.Context, item *model.AssayMethod) error {
 	return r.store.Create(ctx, item)

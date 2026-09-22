@@ -19,6 +19,10 @@ type ResultReview struct {
 	ReviewRequestedBy string    `json:"reviewRequestedBy" gorm:"size:80;index"`
 	PeerReviewedBy    string    `json:"peerReviewedBy" gorm:"size:80;index"`
 	SignedBy          string    `json:"signedBy" gorm:"size:80;index"`
+	// SampleCode and MethodCode link the review to the lab sample under test
+	// and the assay method version whose validity is re-checked at signing.
+	SampleCode string `json:"sampleCode" gorm:"size:64;index"`
+	MethodCode string `json:"methodCode" gorm:"size:64;index"`
 }
 
 func (item *ResultReview) GetBase() *BaseModel { return &item.BaseModel }

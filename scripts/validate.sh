@@ -46,7 +46,7 @@ printf '%s' "$created" | jq -e --arg status "$initial_status" '.data.status == $
 transition=$(printf '{"status":"%s","expectedVersion":%s,"reason":"automated runtime validation"}' "$next_status" "$version")
 curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/$resource/$id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$transition" | jq -e --arg status "$next_status" '.data.status == $status' >/dev/null
 review_code="REVIEW-SMOKE-$(date +%s)-$$"
-review_payload=$(printf '{"code":"%s","name":"Dual reviewer validation","description":"Validates the required peer-review workflow","facility":"Validation Lab","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"AM-001"}' "$review_code" "$now")
+review_payload=$(printf '{"code":"%s","name":"Dual reviewer validation","description":"Validates the required peer-review workflow","facility":"Validation Lab","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"AM-003","sampleCode":"LS-003","methodCode":"AM-003"}' "$review_code" "$now")
 review_created=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$review_payload")
 review_id=$(printf '%s' "$review_created" | jq -er '.data.id')
 review_version=$(printf '%s' "$review_created" | jq -er '.data.version')
@@ -62,6 +62,19 @@ self_sign_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0
 operator_sign_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$review_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$sign_request")
 [ "$operator_sign_status" = "403" ]
 curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$review_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$sign_request" | jq -e '.data.status == "signed" and .data.reviewRequestedBy == "admin" and .data.peerReviewedBy == "reviewer" and .data.signedBy == "reviewer"' >/dev/null
+# Release constraints: sample reception requires a received batch and an active method version.
+bad_sample_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"code\":\"SMOKE-BAD-$(date +%s)\",\"name\":\"Release gate probe\",\"facility\":\"Validation Lab\",\"owner\":\"admin\",\"category\":\"smoke\",\"riskLevel\":\"low\",\"metricValue\":1,\"metricUnit\":\"unit\",\"effectiveAt\":\"$now\",\"batchCode\":\"SB-001\",\"methodCode\":\"AM-003\"}")
+[ "$bad_sample_status" = "422" ]
+good_sample=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"code\":\"SMOKE-OK-$(date +%s)\",\"name\":\"Release gate pass\",\"facility\":\"Validation Lab\",\"owner\":\"admin\",\"category\":\"smoke\",\"riskLevel\":\"low\",\"metricValue\":1,\"metricUnit\":\"unit\",\"effectiveAt\":\"$now\",\"batchCode\":\"SB-003\",\"methodCode\":\"AM-003\"}")
+printf '%s' "$good_sample" | jq -e '.data.status == "received" and .data.batchCode == "SB-003" and .data.methodCode == "AM-003"' >/dev/null
+# A batch with undisposed samples must not close, and the block stays readable via the chain view.
+sb3=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/sampling-batches?search=SB-003" -H "Authorization: Bearer $token")
+sb3_id=$(printf '%s' "$sb3" | jq -er '.data[0].id')
+sb3_version=$(printf '%s' "$sb3" | jq -er '.data[0].version')
+close_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/sampling-batches/$sb3_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"status\":\"closed\",\"expectedVersion\":$sb3_version,\"reason\":\"must be blocked by undisposed samples\"}")
+[ "$close_status" = "422" ]
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/chain/sampling-batches/$sb3_id" -H "Authorization: Bearer $token" | jq -e '.data.checks[0].passed == false and (.data.blocks | length >= 1)' >/dev/null
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/chain/reviews/$review_id" -H "Authorization: Bearer $token" | jq -e '(.data.links | length) == 2 and (.data.checks | length) == 3' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100" -H "Authorization: Bearer $token" | jq -e '.meta.total >= 2' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $token" | jq -e '.data.total >= 2 and .data.transitions >= 1' >/dev/null
 docker compose ps

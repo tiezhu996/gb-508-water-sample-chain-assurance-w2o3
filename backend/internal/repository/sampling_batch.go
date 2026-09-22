@@ -12,6 +12,7 @@ import (
 type SamplingBatchRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.SamplingBatch], error)
 	Get(context.Context, uint) (model.SamplingBatch, error)
+	GetByCode(context.Context, string) (model.SamplingBatch, error)
 	Create(context.Context, *model.SamplingBatch) error
 	Update(context.Context, uint, uint, *model.SamplingBatch) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,9 @@ func (r *samplingBatchRepository) List(ctx context.Context, q dto.PageQuery) (Pa
 }
 func (r *samplingBatchRepository) Get(ctx context.Context, id uint) (model.SamplingBatch, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *samplingBatchRepository) GetByCode(ctx context.Context, code string) (model.SamplingBatch, error) {
+	return r.store.GetByCode(ctx, code)
 }
 func (r *samplingBatchRepository) Create(ctx context.Context, item *model.SamplingBatch) error {
 	return r.store.Create(ctx, item)

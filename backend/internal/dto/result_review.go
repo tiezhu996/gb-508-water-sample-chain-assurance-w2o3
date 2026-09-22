@@ -17,6 +17,10 @@ type CreateResultReview struct {
 	EffectiveAt time.Time `json:"effectiveAt" binding:"required"`
 	Evidence    string    `json:"evidence" binding:"max=2000"`
 	RelatedCode string    `json:"relatedCode" binding:"max=64"`
+	// SampleCode and MethodCode link the review to the sample under test and
+	// the method version that is re-validated before any signing.
+	SampleCode string `json:"sampleCode" binding:"required,max=64"`
+	MethodCode string `json:"methodCode" binding:"required,max=64"`
 }
 
 type UpdateResultReview struct {
