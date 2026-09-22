@@ -18,6 +18,13 @@ export interface DomainRecord {
   reviewRequestedBy?: string;
   peerReviewedBy?: string;
   signedBy?: string;
+  batchCode?: string;
+  methodCode?: string;
+  sampleCode?: string;
+  disposedReason?: string;
+  disposedAt?: string;
+  disposedMethodCode?: string;
+  disposedBatchCode?: string;
   createdAt: string;
   updatedAt: string;
 }

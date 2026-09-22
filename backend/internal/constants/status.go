@@ -59,3 +59,15 @@ func CanTransition(graph map[string]map[string]bool, from, to string) bool {
 	targets, exists := graph[from]
 	return exists && targets[to]
 }
+
+// AssayMethodUsable reports whether a method version may back sample reception
+// or result signing. Only active versions count as 有效 for release gates.
+func AssayMethodUsable(status string) bool {
+	return status == "active"
+}
+
+// SamplingBatchReceived reports whether a batch has arrived at the lab so new
+// samples may be received against it.
+func SamplingBatchReceived(status string) bool {
+	return status == "received"
+}

@@ -17,6 +17,8 @@ type CreateResultReview struct {
 	EffectiveAt time.Time `json:"effectiveAt" binding:"required"`
 	Evidence    string    `json:"evidence" binding:"max=2000"`
 	RelatedCode string    `json:"relatedCode" binding:"max=64"`
+	SampleCode  string    `json:"sampleCode" binding:"required,max=64"`
+	MethodCode  string    `json:"methodCode" binding:"required,max=64"`
 }
 
 type UpdateResultReview struct {
@@ -32,4 +34,6 @@ type UpdateResultReview struct {
 	EffectiveAt     time.Time `json:"effectiveAt" binding:"required"`
 	Evidence        string    `json:"evidence" binding:"max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"max=64"`
+	SampleCode      string    `json:"sampleCode" binding:"required,max=64"`
+	MethodCode      string    `json:"methodCode" binding:"required,max=64"`
 }

@@ -24,11 +24,12 @@ type SamplingBatchService interface {
 
 type samplingBatchService struct {
 	repository repository.SamplingBatchRepository
+	samples    repository.LabSampleRepository
 	security   SecurityService
 }
 
-func NewSamplingBatchService(repo repository.SamplingBatchRepository, security SecurityService) SamplingBatchService {
-	return &samplingBatchService{repository: repo, security: security}
+func NewSamplingBatchService(repo repository.SamplingBatchRepository, samples repository.LabSampleRepository, security SecurityService) SamplingBatchService {
+	return &samplingBatchService{repository: repo, samples: samples, security: security}
 }
 
 func (s *samplingBatchService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.SamplingBatch], error) {
@@ -97,6 +98,16 @@ func (s *samplingBatchService) Transition(ctx context.Context, id uint, input dt
 	target := strings.TrimSpace(input.Status)
 	if !constants.CanTransition(constants.SamplingBatchTransitions, current.Status, target) {
 		return model.SamplingBatch{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
+	}
+	if target == "closed" {
+		// 批次关闭放行约束：仍有未处置样本时不得关闭。
+		open, err := s.samples.CountOpenByBatchCode(ctx, current.Code)
+		if err != nil {
+			return model.SamplingBatch{}, fmt.Errorf("count open samples of 采样批次: %w", err)
+		}
+		if open > 0 {
+			return model.SamplingBatch{}, fmt.Errorf("%w: batch %s still has %d undisposed samples", ErrReleaseBlocked, current.Code, open)
+		}
 	}
 	before := current.Status
 	current.Status = target

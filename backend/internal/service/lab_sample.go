@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/blueship581/water-sample-chain-assurance/backend/internal/dto"
 	"github.com/blueship581/water-sample-chain-assurance/backend/internal/model"
 	"github.com/blueship581/water-sample-chain-assurance/backend/internal/repository"
+	"gorm.io/gorm"
 )
 
 type LabSampleService interface {
@@ -24,11 +26,13 @@ type LabSampleService interface {
 
 type labSampleService struct {
 	repository repository.LabSampleRepository
+	batches    repository.SamplingBatchRepository
+	methods    repository.AssayMethodRepository
 	security   SecurityService
 }
 
-func NewLabSampleService(repo repository.LabSampleRepository, security SecurityService) LabSampleService {
-	return &labSampleService{repository: repo, security: security}
+func NewLabSampleService(repo repository.LabSampleRepository, batches repository.SamplingBatchRepository, methods repository.AssayMethodRepository, security SecurityService) LabSampleService {
+	return &labSampleService{repository: repo, batches: batches, methods: methods, security: security}
 }
 
 func (s *labSampleService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.LabSample], error) {
@@ -43,6 +47,11 @@ func (s *labSampleService) Create(ctx context.Context, input dto.CreateLabSample
 	if err := validateLabSampleBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.LabSample{}, err
 	}
+	batchCode := strings.ToUpper(strings.TrimSpace(input.BatchCode))
+	methodCode := strings.ToUpper(strings.TrimSpace(input.MethodCode))
+	if err := s.ensureReceivable(ctx, batchCode, methodCode); err != nil {
+		return model.LabSample{}, err
+	}
 	item := model.LabSample{
 		BaseModel: model.BaseModel{
 			Code: strings.ToUpper(strings.TrimSpace(input.Code)), Name: strings.TrimSpace(input.Name),
@@ -53,6 +62,7 @@ func (s *labSampleService) Create(ctx context.Context, input dto.CreateLabSample
 		MetricValue: input.MetricValue, MetricUnit: strings.TrimSpace(input.MetricUnit),
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		BatchCode:   batchCode, MethodCode: methodCode,
 	}
 	if err := s.repository.Create(ctx, &item); err != nil {
 		return model.LabSample{}, fmt.Errorf("create 实验室样本: %w", err)
@@ -69,6 +79,11 @@ func (s *labSampleService) Update(ctx context.Context, id uint, input dto.Update
 	if err := validateLabSampleBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.LabSample{}, err
 	}
+	batchCode := strings.ToUpper(strings.TrimSpace(input.BatchCode))
+	methodCode := strings.ToUpper(strings.TrimSpace(input.MethodCode))
+	if err := s.ensureLinksExist(ctx, batchCode, methodCode); err != nil {
+		return model.LabSample{}, err
+	}
 	current.Name = strings.TrimSpace(input.Name)
 	current.Description = strings.TrimSpace(input.Description)
 	current.Facility = strings.TrimSpace(input.Facility)
@@ -80,6 +95,8 @@ func (s *labSampleService) Update(ctx context.Context, id uint, input dto.Update
 	current.EffectiveAt = input.EffectiveAt.UTC()
 	current.Evidence = strings.TrimSpace(input.Evidence)
 	current.RelatedCode = strings.ToUpper(strings.TrimSpace(input.RelatedCode))
+	current.BatchCode = batchCode
+	current.MethodCode = methodCode
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
@@ -98,6 +115,23 @@ func (s *labSampleService) Transition(ctx context.Context, id uint, input dto.Tr
 	if !constants.CanTransition(constants.LabSampleTransitions, current.Status, target) {
 		return model.LabSample{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
 	}
+	switch target {
+	case string(constants.SampleStateAccepted):
+		// 样本接收放行约束：批次必须已收到且所选方法版本仍有效。
+		if err := s.ensureReceivable(ctx, current.BatchCode, current.MethodCode); err != nil {
+			return model.LabSample{}, err
+		}
+	case string(constants.SampleStateDisposed):
+		// 样本处置必须填写原因，并快照当时使用的方法与所属批次。
+		if strings.TrimSpace(input.Reason) == "" {
+			return model.LabSample{}, fmt.Errorf("%w: disposal reason is required", ErrInvalidInput)
+		}
+		now := time.Now().UTC()
+		current.DisposedReason = strings.TrimSpace(input.Reason)
+		current.DisposedAt = &now
+		current.DisposedMethodCode = current.MethodCode
+		current.DisposedBatchCode = current.BatchCode
+	}
 	before := current.Status
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
@@ -109,6 +143,50 @@ func (s *labSampleService) Transition(ctx context.Context, id uint, input dto.Tr
 		return model.LabSample{}, fmt.Errorf("persist transition audit: %w", err)
 	}
 	return s.repository.Get(ctx, id)
+}
+
+// ensureReceivable enforces the 样本接收 release gate: the owning batch must
+// already be received and the selected method version must be usable.
+func (s *labSampleService) ensureReceivable(ctx context.Context, batchCode, methodCode string) error {
+	batch, err := s.batches.GetByCode(ctx, batchCode)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: sampling batch %s does not exist", ErrReleaseBlocked, batchCode)
+		}
+		return err
+	}
+	if !constants.SamplingBatchReceived(batch.Status) {
+		return fmt.Errorf("%w: sampling batch %s is %s, expected received before sample acceptance", ErrReleaseBlocked, batch.Code, batch.Status)
+	}
+	method, err := s.methods.GetByCode(ctx, methodCode)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: assay method %s does not exist", ErrReleaseBlocked, methodCode)
+		}
+		return err
+	}
+	if !constants.AssayMethodUsable(method.Status) {
+		return fmt.Errorf("%w: assay method %s is %s, expected an active version", ErrReleaseBlocked, method.Code, method.Status)
+	}
+	return nil
+}
+
+// ensureLinksExist validates that relinked batch/method codes resolve; state
+// gates are only re-checked at the acceptance transition.
+func (s *labSampleService) ensureLinksExist(ctx context.Context, batchCode, methodCode string) error {
+	if _, err := s.batches.GetByCode(ctx, batchCode); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: sampling batch %s does not exist", ErrInvalidInput, batchCode)
+		}
+		return err
+	}
+	if _, err := s.methods.GetByCode(ctx, methodCode); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: assay method %s does not exist", ErrInvalidInput, methodCode)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *labSampleService) Delete(ctx context.Context, id uint, actor, requestID string) error {

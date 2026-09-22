@@ -19,6 +19,10 @@ type ResultReview struct {
 	ReviewRequestedBy string    `json:"reviewRequestedBy" gorm:"size:80;index"`
 	PeerReviewedBy    string    `json:"peerReviewedBy" gorm:"size:80;index"`
 	SignedBy          string    `json:"signedBy" gorm:"size:80;index"`
+	// SampleCode and MethodCode anchor the review in the release chain so the
+	// signing gate can re-verify the sample state and method version.
+	SampleCode string `json:"sampleCode" gorm:"size:64;index"`
+	MethodCode string `json:"methodCode" gorm:"size:64;index"`
 }
 
 func (item *ResultReview) GetBase() *BaseModel { return &item.BaseModel }

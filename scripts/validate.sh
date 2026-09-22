@@ -46,7 +46,7 @@ printf '%s' "$created" | jq -e --arg status "$initial_status" '.data.status == $
 transition=$(printf '{"status":"%s","expectedVersion":%s,"reason":"automated runtime validation"}' "$next_status" "$version")
 curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/$resource/$id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$transition" | jq -e --arg status "$next_status" '.data.status == $status' >/dev/null
 review_code="REVIEW-SMOKE-$(date +%s)-$$"
-review_payload=$(printf '{"code":"%s","name":"Dual reviewer validation","description":"Validates the required peer-review workflow","facility":"Validation Lab","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"AM-001"}' "$review_code" "$now")
+review_payload=$(printf '{"code":"%s","name":"Dual reviewer validation","description":"Validates the required peer-review workflow","facility":"Validation Lab","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"AM-003","sampleCode":"LS-003","methodCode":"AM-003"}' "$review_code" "$now")
 review_created=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$review_payload")
 review_id=$(printf '%s' "$review_created" | jq -er '.data.id')
 review_version=$(printf '%s' "$review_created" | jq -er '.data.version')
@@ -62,6 +62,39 @@ self_sign_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0
 operator_sign_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$review_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$sign_request")
 [ "$operator_sign_status" = "403" ]
 curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$review_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$sign_request" | jq -e '.data.status == "signed" and .data.reviewRequestedBy == "admin" and .data.peerReviewedBy == "reviewer" and .data.signedBy == "reviewer"' >/dev/null
+# Release gate: sample reception requires a received batch and a usable method version.
+bad_sample_payload=$(printf '{"code":"SMOKE-BAD-%s","name":"Gate rejection check","facility":"Validation Lab","owner":"admin","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"","batchCode":"SB-001","methodCode":"AM-003"}' "$(date +%s)$$" "$now")
+bad_sample_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$bad_sample_payload")
+[ "$bad_sample_status" = "422" ]
+# Release gate: reception passes with a received batch and active method; disposal keeps the chain snapshot.
+sample_code="SMOKE-SAMPLE-$(date +%s)-$$"
+sample_payload=$(printf '{"code":"%s","name":"Release gate sample","facility":"Validation Lab","owner":"admin","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"","batchCode":"SB-003","methodCode":"AM-003"}' "$sample_code" "$now")
+sample_created=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$sample_payload")
+sample_id=$(printf '%s' "$sample_created" | jq -er '.data.id')
+sample_version=$(printf '%s' "$sample_created" | jq -er '.data.version')
+accepted=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples/$sample_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(printf '{"status":"accepted","expectedVersion":%s,"reason":"reception gate passed"}' "$sample_version")")
+sample_version=$(printf '%s' "$accepted" | jq -er '.data.version')
+testing=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples/$sample_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(printf '{"status":"testing","expectedVersion":%s,"reason":"start chain of custody testing"}' "$sample_version")")
+sample_version=$(printf '%s' "$testing" | jq -er '.data.version')
+disposed=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/samples/$sample_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(printf '{"status":"disposed","expectedVersion":%s,"reason":"保存期届满，按规定处置"}' "$sample_version")")
+printf '%s' "$disposed" | jq -e '.data.disposedReason == "保存期届满，按规定处置" and .data.disposedMethodCode == "AM-003" and .data.disposedBatchCode == "SB-003" and (.data.disposedAt | length > 0)' >/dev/null
+# Release gate: a batch with undisposed samples cannot be closed.
+sb3=$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/sampling-batches?page=1&pageSize=100&search=SB-003" -H "Authorization: Bearer $token")
+sb3_id=$(printf '%s' "$sb3" | jq -er '.data[0].id')
+sb3_version=$(printf '%s' "$sb3" | jq -er '.data[0].version')
+close_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/sampling-batches/$sb3_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(printf '{"status":"closed","expectedVersion":%s,"reason":"must be blocked by open samples"}' "$sb3_version")")
+[ "$close_status" = "422" ]
+# Release gate: signing is refused when the linked method version is not active.
+gate_review_code="REVIEW-GATE-$(date +%s)-$$"
+gate_review_payload=$(printf '{"code":"%s","name":"Signing gate validation","facility":"Validation Lab","owner":"operator","category":"smoke","riskLevel":"low","metricValue":1,"metricUnit":"unit","effectiveAt":"%s","evidence":"scripts/validate.sh","relatedCode":"AM-001","sampleCode":"LS-003","methodCode":"AM-001"}' "$gate_review_code" "$now")
+gate_review=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$gate_review_payload")
+gate_review_id=$(printf '%s' "$gate_review" | jq -er '.data.id')
+gate_review_version=$(printf '%s' "$gate_review" | jq -er '.data.version')
+gate_peer=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$gate_review_id/transition" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "$(printf '{"status":"peer_review","expectedVersion":%s,"reason":"submit for gate check"}' "$gate_review_version")")
+gate_review_version=$(printf '%s' "$gate_peer" | jq -er '.data.version')
+gate_sign_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$gate_review_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$(printf '{"status":"signed","expectedVersion":%s,"reason":"method version is not active"}' "$gate_review_version")")
+[ "$gate_sign_status" = "422" ]
+curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/reviews/$gate_review_id" -H "Authorization: Bearer $token" | jq -e '.data.status == "peer_review" and .data.signedBy == ""' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100" -H "Authorization: Bearer $token" | jq -e '.meta.total >= 2' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $token" | jq -e '.data.total >= 2 and .data.transitions >= 1' >/dev/null
 docker compose ps

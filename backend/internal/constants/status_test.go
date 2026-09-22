@@ -20,3 +20,12 @@ func TestResultReviewRequiresPeerReviewBeforeSigning(t *testing.T) {
 		t.Fatal("expected draft -> peer_review -> signed workflow")
 	}
 }
+
+func TestReleaseGateStatusHelpers(t *testing.T) {
+	if !AssayMethodUsable("active") || AssayMethodUsable("validated") || AssayMethodUsable("retired") {
+		t.Fatal("only active method versions may back reception and signing")
+	}
+	if !SamplingBatchReceived("received") || SamplingBatchReceived("collecting") || SamplingBatchReceived("closed") {
+		t.Fatal("only received batches may accept new samples")
+	}
+}
